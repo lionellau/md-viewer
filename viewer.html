@@ -1,0 +1,1599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>MD Viewer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+
+<!--
+  Self-contained markdown viewer. Pick a folder; pages render in the right pane.
+  No build step, no external network calls. Mermaid runs in a sandboxed iframe.
+-->
+
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-soft: #f7f7f5;
+    --bg-code: #f3f2ef;
+    --bg-callout: #f4f6fa;
+    --fg: #2b2a28;
+    --fg-soft: #6b6960;
+    --fg-faint: #9b9890;
+    --border: #e6e4df;
+    --border-soft: #efedea;
+    --accent: #6f5ad3;
+    --accent-soft: #efebff;
+    --link: #4a3fb8;
+    --quote: #8a8779;
+    --selection: #d8d2ff;
+  }
+  body.dark {
+    --bg: #1e1f22;
+    --bg-soft: #25272b;
+    --bg-code: #2a2c30;
+    --bg-callout: #262a33;
+    --fg: #e4e2dc;
+    --fg-soft: #a8a59c;
+    --fg-faint: #75736a;
+    --border: #34363b;
+    --border-soft: #2c2e33;
+    --accent: #a99af0;
+    --accent-soft: #353150;
+    --link: #b0a4f5;
+    --quote: #8d8a80;
+    --selection: #4a3f80;
+  }
+
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter",
+                 "Helvetica Neue", Arial, sans-serif;
+    font-size: 16px;
+    line-height: 1.6;
+  }
+  ::selection { background: var(--selection); }
+
+  /* ---------- layout ---------- */
+  .app { display: grid; grid-template-columns: 280px 1fr; height: 100vh; }
+  .sidebar {
+    background: var(--bg-soft);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column; min-width: 0;
+  }
+  .sidebar header {
+    padding: 12px 14px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 8px; align-items: center;
+  }
+  .sidebar header .title {
+    font-weight: 600; font-size: 13px; color: var(--fg-soft);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    flex: 1; min-width: 0;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .sidebar .controls { padding: 10px 12px; border-bottom: 1px solid var(--border-soft); }
+  .sidebar .search {
+    width: 100%; padding: 7px 10px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--bg);
+    color: var(--fg); font-size: 13px; outline: none;
+  }
+  .sidebar .search:focus { border-color: var(--accent); }
+  .sidebar .tree { flex: 1; overflow: auto; padding: 6px 4px 14px 4px; }
+  .sidebar footer {
+    padding: 8px 12px; border-top: 1px solid var(--border-soft);
+    font-size: 11px; color: var(--fg-faint); display: flex; gap: 10px;
+  }
+  .sidebar footer button {
+    background: transparent; border: 1px solid var(--border);
+    color: var(--fg-soft); border-radius: 5px;
+    padding: 3px 8px; font-size: 11px; cursor: pointer;
+  }
+  .sidebar footer button:hover { background: var(--bg); color: var(--fg); }
+
+  .main { overflow: auto; }
+  .content {
+    max-width: 760px; margin: 0 auto; padding: 56px 64px 120px 64px;
+  }
+
+  /* ---------- empty / open vault state ---------- */
+  .empty {
+    height: 100%; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; gap: 18px;
+    color: var(--fg-soft); padding: 30px;
+  }
+  .empty h1 { font-size: 22px; margin: 0; color: var(--fg); }
+  .empty p { margin: 0; max-width: 420px; text-align: center; line-height: 1.5; }
+  .empty .row { display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .btn {
+    background: var(--accent); color: #fff; border: 0;
+    padding: 9px 16px; border-radius: 7px; font-size: 13.5px;
+    cursor: pointer; font-weight: 500;
+  }
+  .btn:hover { filter: brightness(0.95); }
+  .btn.ghost {
+    background: transparent; color: var(--fg);
+    border: 1px solid var(--border);
+  }
+  .btn.ghost:hover { background: var(--bg-soft); }
+  .empty .hint { font-size: 12px; color: var(--fg-faint); }
+
+  /* ---------- tree ---------- */
+  .node { user-select: none; }
+  .node .row {
+    display: flex; align-items: center; gap: 4px;
+    padding: 3px 8px; border-radius: 5px;
+    font-size: 13.5px; cursor: pointer;
+    color: var(--fg); white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .node .row:hover { background: var(--border-soft); }
+  .node.dir > .row { color: var(--fg-soft); font-weight: 500; }
+  .node .caret {
+    width: 14px; text-align: center; color: var(--fg-faint);
+    flex: 0 0 auto; font-size: 10px;
+  }
+  .node .icon {
+    width: 14px; flex: 0 0 auto; color: var(--fg-faint); font-size: 12px;
+  }
+  .node .label {
+    flex: 1; min-width: 0; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+  }
+  .node.file.active > .row {
+    background: var(--accent-soft); color: var(--fg);
+  }
+  .node.file.active > .row .label { font-weight: 500; }
+  .node.dir > .children { padding-left: 14px; }
+  .node.dir.collapsed > .children { display: none; }
+  .node.hidden { display: none; }
+
+  /* ---------- markdown content ---------- */
+  .content h1, .content h2, .content h3, .content h4, .content h5, .content h6 {
+    line-height: 1.3; margin-top: 1.6em; margin-bottom: 0.5em; font-weight: 700;
+  }
+  .content h1 { font-size: 2em; padding-bottom: 0.3em; border-bottom: 1px solid var(--border-soft); margin-top: 0; }
+  .content h2 { font-size: 1.5em; padding-bottom: 0.25em; border-bottom: 1px solid var(--border-soft); }
+  .content h3 { font-size: 1.22em; }
+  .content h4 { font-size: 1.06em; color: var(--fg-soft); }
+  .content h5, .content h6 { font-size: 0.95em; color: var(--fg-soft); }
+
+  .content p { margin: 0.65em 0; }
+  .content a { color: var(--link); text-decoration: none; }
+  .content a:hover { text-decoration: underline; }
+  .content a.broken { color: var(--fg-faint); text-decoration: underline dashed; cursor: help; }
+  .content a.wikilink { color: var(--accent); }
+  .content a.wikilink::before { content: ""; }
+
+  .content hr {
+    border: 0; border-top: 1px solid var(--border);
+    margin: 1.8em 0;
+  }
+
+  .content blockquote {
+    margin: 1em 0; padding: 4px 16px;
+    border-left: 3px solid var(--border); color: var(--quote);
+  }
+
+  .content ul, .content ol { margin: 0.6em 0; padding-left: 1.7em; }
+  .content li { margin: 0.18em 0; }
+  .content li > p { margin: 0.2em 0; }
+  .content ul.task-list { list-style: none; padding-left: 1.2em; }
+  .content ul.task-list li {
+    position: relative; padding-left: 1.5em;
+  }
+  .content ul.task-list li::before {
+    position: absolute; left: 0; top: 0.18em;
+    width: 16px; height: 16px;
+    border: 1.5px solid var(--border);
+    border-radius: 3px; background: var(--bg);
+    content: "";
+  }
+  .content ul.task-list li.checked::before {
+    background: var(--accent); border-color: var(--accent);
+  }
+  .content ul.task-list li.checked::after {
+    position: absolute; left: 3px; top: 1px;
+    color: #fff; content: "✓"; font-size: 12px; font-weight: 700;
+  }
+
+  /* code */
+  .content code {
+    font-family: ui-monospace, "SF Mono", "Menlo", Consolas, monospace;
+    font-size: 0.88em;
+    padding: 1px 5px; border-radius: 4px;
+    background: var(--bg-code); color: var(--fg);
+  }
+  .content pre {
+    margin: 1em 0; padding: 14px 16px;
+    background: var(--bg-code); color: var(--fg);
+    border-radius: 7px; overflow: auto;
+    font-family: ui-monospace, "SF Mono", "Menlo", Consolas, monospace;
+    font-size: 0.86em; line-height: 1.5;
+  }
+  .content pre code { padding: 0; background: transparent; font-size: 1em; }
+  .content pre .lang-tag {
+    display: block; font-size: 11px; letter-spacing: 0.05em;
+    color: var(--fg-faint); text-transform: uppercase;
+    margin-bottom: 6px;
+  }
+
+  /* tables */
+  .content table {
+    border-collapse: collapse; margin: 1em 0;
+    width: auto; max-width: 100%; font-size: 0.95em;
+  }
+  .content th, .content td {
+    border: 1px solid var(--border);
+    padding: 6px 11px; text-align: left;
+  }
+  .content th { background: var(--bg-soft); font-weight: 600; }
+  .content tr:nth-child(2n) td { background: var(--bg-soft); }
+
+  /* callouts */
+  .callout {
+    margin: 1em 0; padding: 12px 16px 12px 16px;
+    border-left: 4px solid var(--accent);
+    background: var(--bg-callout);
+    border-radius: 4px;
+  }
+  .callout .callout-title {
+    font-weight: 700; margin-bottom: 4px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .callout .callout-title .marker { font-size: 14px; }
+  .callout.note    { border-color: #4a82d6; }
+  .callout.note    .callout-title .marker { color: #4a82d6; }
+  .callout.tip,
+  .callout.hint    { border-color: #2ea672; }
+  .callout.tip     .callout-title .marker,
+  .callout.hint    .callout-title .marker { color: #2ea672; }
+  .callout.warning,
+  .callout.caution { border-color: #d59f3a; }
+  .callout.warning .callout-title .marker,
+  .callout.caution .callout-title .marker { color: #d59f3a; }
+  .callout.danger,
+  .callout.error   { border-color: #c84e4e; }
+  .callout.danger  .callout-title .marker,
+  .callout.error   .callout-title .marker { color: #c84e4e; }
+  .callout.info    { border-color: #6b6960; }
+  .callout.info    .callout-title .marker { color: #6b6960; }
+
+  /* images */
+  .content img { max-width: 100%; border-radius: 5px; }
+
+  /* math */
+  .math-inline {
+    font-family: "STIX Two Math", "Latin Modern Math", "Cambria Math",
+                 "Times New Roman", serif;
+    font-style: italic;
+  }
+  .math-inline .op, .math-inline .num { font-style: normal; }
+  .math-block {
+    display: block; text-align: center; margin: 1em 0;
+    font-family: "STIX Two Math", "Latin Modern Math", "Cambria Math",
+                 "Times New Roman", serif;
+    font-style: italic; font-size: 1.05em;
+  }
+  .math-block .op, .math-block .num { font-style: normal; }
+  .frac {
+    display: inline-block; vertical-align: middle;
+    text-align: center; font-style: normal;
+    margin: 0 0.15em;
+  }
+  .frac .num-line {
+    display: block; padding: 0 0.25em 1px 0.25em;
+    border-bottom: 1px solid currentColor;
+  }
+  .frac .den-line { display: block; padding: 1px 0.25em 0 0.25em; }
+  .sqrt { white-space: nowrap; }
+  .sqrt .radicand {
+    border-top: 1px solid currentColor;
+    padding: 0 0.18em 0 0.1em;
+    margin-left: -0.05em;
+  }
+
+  /* mermaid host */
+  .mermaid-host {
+    display: block; margin: 1em 0;
+    background: var(--bg-soft);
+    border: 1px solid var(--border-soft);
+    border-radius: 7px; padding: 14px;
+    overflow: auto;
+    min-height: 40px;
+  }
+  .mermaid-host .mermaid-error {
+    font-family: ui-monospace, "SF Mono", "Menlo", Consolas, monospace;
+    font-size: 0.85em;
+    color: #8a1f1f;
+    white-space: pre-wrap;
+  }
+  body.dark .mermaid-host .mermaid-error { color: #f3b8b8; }
+  .mermaid-host .mermaid-pending {
+    color: var(--fg-faint); font-size: 0.85em;
+    font-family: ui-monospace, "SF Mono", "Menlo", Consolas, monospace;
+  }
+
+  /* breadcrumbs */
+  .breadcrumbs {
+    color: var(--fg-faint); font-size: 12.5px;
+    margin-bottom: 6px; word-break: break-all;
+  }
+  .breadcrumbs .sep { margin: 0 4px; }
+
+  /* hidden mermaid sandbox iframe */
+  #mermaid-sandbox {
+    position: absolute; width: 1px; height: 1px;
+    left: -9999px; top: -9999px; border: 0;
+  }
+</style>
+
+</head>
+<body>
+
+<div class="app">
+  <aside class="sidebar">
+    <header>
+      <div class="title" id="vault-title">No vault</div>
+      <button class="btn ghost" id="btn-theme" style="padding:3px 9px; font-size:12px;" title="Toggle theme">●</button>
+    </header>
+    <div class="controls">
+      <input id="search" class="search" placeholder="Search file titles…" autocomplete="off">
+    </div>
+    <nav class="tree" id="tree"></nav>
+    <footer>
+      <button id="btn-pick">Open folder</button>
+      <button id="btn-pick-input">Open (legacy)</button>
+    </footer>
+  </aside>
+  <main class="main" id="main">
+    <div class="empty" id="empty-state">
+      <h1>Markdown Viewer</h1>
+      <p>Open a folder of <code>.md</code> files to start. Files stay on your computer — nothing is uploaded, nothing is fetched from the network.</p>
+      <div class="row">
+        <button class="btn" id="empty-pick">Open folder…</button>
+        <button class="btn ghost" id="empty-pick-input">Open (legacy picker)</button>
+      </div>
+      <p class="hint">Tip: the legacy picker works on every browser. The first button needs Edge / Chrome with the File System Access API.</p>
+    </div>
+  </main>
+</div>
+
+<iframe
+  id="mermaid-sandbox"
+  src="mermaid-sandbox.html"
+  sandbox="allow-scripts"
+  title="mermaid renderer"
+  aria-hidden="true"></iframe>
+
+<script>
+"use strict";
+
+/* ============================================================
+ * Tiny markdown parser, written from scratch.
+ *
+ * Supports (intentionally a focused subset):
+ *   ATX headings (# .. ######)
+ *   Paragraphs, hard breaks ("  \n"), thematic breaks (---, ***, ___)
+ *   Bullet and ordered lists (with nesting by indent)
+ *   Task list items: - [ ]   - [x]
+ *   Blockquotes (>) with > [!note]/[!tip]/... callouts
+ *   Fenced code blocks ``` and ~~~ (incl. ```mermaid)
+ *   Tables (GFM pipe tables)
+ *   Inline: **bold**  *italic*  ~~strike~~  `code`
+ *           [text](url)  [text](url "title")
+ *           ![alt](src)
+ *           [[wikilink]]   [[wikilink|alias]]
+ *           autolinks <https://...>
+ *           inline math $...$  block math $$...$$
+ *   Frontmatter (--- yaml ---) is detected and skipped from rendering.
+ *
+ * Not supported on purpose: HTML passthrough, reference-style links,
+ * setext headings, definition lists, footnotes. Anything that looks
+ * like HTML in the source is shown as escaped text.
+ * ============================================================ */
+
+// ---- escape helpers ----
+function escHtml(s) {
+  return String(s)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+function escAttr(s) { return escHtml(s).replace(/'/g, "&#39;"); }
+
+// safe URL: only allow http(s)/mailto/relative, plus our internal app: scheme
+function safeUrl(u) {
+  if (!u) return "";
+  var t = String(u).trim();
+  // allow our two synthetic schemes
+  if (t.indexOf("app:") === 0) return t;
+  // strip control chars
+  if (/[\x00-\x1F]/.test(t)) return "";
+  var lower = t.toLowerCase();
+  if (lower.indexOf("javascript:") === 0) return "";
+  if (lower.indexOf("vbscript:") === 0) return "";
+  if (lower.indexOf("data:") === 0) {
+    // permit only data:image/* ; everything else (notably data:text/html) is rejected
+    if (lower.indexOf("data:image/") !== 0) return "";
+  }
+  return t;
+}
+
+// ---------- inline parser ----------
+function parseInline(src, ctx) {
+  var out = "";
+  var i = 0, n = src.length;
+
+  function readUntil(open, close, startIdx) {
+    // returns end index (after closing) or -1
+    var depth = 1, j = startIdx;
+    while (j < n) {
+      var c = src.charAt(j);
+      if (c === "\\" && j + 1 < n) { j += 2; continue; }
+      if (c === open && open !== close) { depth++; j++; continue; }
+      if (c === close) {
+        depth--;
+        if (depth === 0) return j;
+        j++; continue;
+      }
+      j++;
+    }
+    return -1;
+  }
+
+  while (i < n) {
+    var ch = src.charAt(i);
+
+    // backslash escape
+    if (ch === "\\" && i + 1 < n) {
+      var nx = src.charAt(i + 1);
+      if ("\\`*_{}[]()#+-.!>~|$".indexOf(nx) !== -1) {
+        out += escHtml(nx);
+        i += 2;
+        continue;
+      }
+    }
+
+    // inline code `...`
+    if (ch === "`") {
+      // count backticks
+      var run = 1;
+      while (i + run < n && src.charAt(i + run) === "`") run++;
+      var marker = "`".repeat(run);
+      var end = src.indexOf(marker, i + run);
+      if (end !== -1) {
+        var code = src.substring(i + run, end);
+        // CommonMark: trim a single leading/trailing space if both ends have one
+        if (code.length >= 2 && code.charAt(0) === " " && code.charAt(code.length - 1) === " "
+            && code.replace(/ /g, "").length > 0) {
+          code = code.substring(1, code.length - 1);
+        }
+        out += "<code>" + escHtml(code) + "</code>";
+        i = end + run;
+        continue;
+      }
+    }
+
+    // block/inline math is handled at block level for $$ ... $$.
+    // here we handle inline $...$ (no nested $, no surrounding digits to avoid prices)
+    if (ch === "$" && src.charAt(i + 1) !== "$") {
+      var prev = i > 0 ? src.charAt(i - 1) : " ";
+      var nextCh = src.charAt(i + 1);
+      // require non-space immediately after the opening $ (CommonMath-ish)
+      if (nextCh && nextCh !== " " && nextCh !== "\t") {
+        // find closing $ that is not preceded by space and not followed by digit
+        var j = i + 1;
+        var found = -1;
+        while (j < n) {
+          if (src.charAt(j) === "\\" && j + 1 < n) { j += 2; continue; }
+          if (src.charAt(j) === "$") {
+            var before = src.charAt(j - 1);
+            var after = src.charAt(j + 1);
+            if (before !== " " && before !== "\t"
+                && !(after >= "0" && after <= "9")) {
+              found = j; break;
+            }
+          }
+          j++;
+        }
+        if (found !== -1) {
+          var expr = src.substring(i + 1, found);
+          out += renderMath(expr, false);
+          i = found + 1;
+          continue;
+        }
+      }
+    }
+
+    // images: ![alt](url "title")
+    if (ch === "!" && src.charAt(i + 1) === "[") {
+      var altEnd = readUntil("[", "]", i + 2);
+      if (altEnd !== -1 && src.charAt(altEnd + 1) === "(") {
+        var urlEnd = readUntil("(", ")", altEnd + 2);
+        if (urlEnd !== -1) {
+          var alt = src.substring(i + 2, altEnd);
+          var raw = src.substring(altEnd + 2, urlEnd).trim();
+          var parsed = splitLinkTarget(raw);
+          var u = safeUrl(parsed.href);
+          if (u) {
+            out += '<img src="' + escAttr(u) + '" alt="' + escAttr(alt) + '"' +
+                   (parsed.title ? ' title="' + escAttr(parsed.title) + '"' : "") + '>';
+            i = urlEnd + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    // wiki links: [[Note Name]] or [[Note Name|alias]]
+    if (ch === "[" && src.charAt(i + 1) === "[") {
+      var wEnd = src.indexOf("]]", i + 2);
+      if (wEnd !== -1) {
+        var inner = src.substring(i + 2, wEnd);
+        var pipe = inner.indexOf("|");
+        var target = pipe === -1 ? inner : inner.substring(0, pipe);
+        var alias = pipe === -1 ? inner : inner.substring(pipe + 1);
+        out += renderWikiLink(target.trim(), alias.trim(), ctx);
+        i = wEnd + 2;
+        continue;
+      }
+    }
+
+    // links: [text](url "title")
+    if (ch === "[") {
+      var txtEnd = readUntil("[", "]", i + 1);
+      if (txtEnd !== -1 && src.charAt(txtEnd + 1) === "(") {
+        var lEnd = readUntil("(", ")", txtEnd + 2);
+        if (lEnd !== -1) {
+          var text = src.substring(i + 1, txtEnd);
+          var rawL = src.substring(txtEnd + 2, lEnd).trim();
+          var p = splitLinkTarget(rawL);
+          var url = safeUrl(p.href);
+          if (url) {
+            // resolve relative .md links to internal app:file paths
+            var resolved = resolveLink(url, ctx);
+            out += '<a href="' + escAttr(resolved.href) + '"' +
+                   (resolved.cls ? ' class="' + resolved.cls + '"' : "") +
+                   (p.title ? ' title="' + escAttr(p.title) + '"' : "") + '>' +
+                   parseInline(text, ctx) + '</a>';
+            i = lEnd + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    // autolinks <http://..> <mailto:..>
+    if (ch === "<") {
+      var gt = src.indexOf(">", i + 1);
+      if (gt !== -1) {
+        var content = src.substring(i + 1, gt);
+        if (/^https?:\/\/\S+$/.test(content) || /^mailto:\S+@\S+$/.test(content)) {
+          var u2 = safeUrl(content);
+          if (u2) {
+            out += '<a href="' + escAttr(u2) + '" rel="noopener noreferrer">' +
+                   escHtml(content) + '</a>';
+            i = gt + 1;
+            continue;
+          }
+        }
+      }
+    }
+
+    // strong/em/strike: **, __, *, _, ~~
+    var emm = matchEmphasis(src, i);
+    if (emm) {
+      out += '<' + emm.tag + '>' + parseInline(emm.inner, ctx) + '</' + emm.tag + '>';
+      i = emm.end;
+      continue;
+    }
+
+    // hard line break: two trailing spaces before \n
+    if (ch === " " && src.charAt(i + 1) === " " && src.charAt(i + 2) === "\n") {
+      out += "<br>";
+      i += 3;
+      continue;
+    }
+
+    // default: escape this char
+    out += escHtml(ch);
+    i++;
+  }
+
+  return out;
+}
+
+function splitLinkTarget(raw) {
+  // raw might be: url   |   url "title"   |   <url> "title"
+  raw = raw.trim();
+  if (raw.charAt(0) === "<") {
+    var gt = raw.indexOf(">");
+    if (gt !== -1) {
+      var rest = raw.substring(gt + 1).trim();
+      var t = "";
+      if ((rest.charAt(0) === '"' || rest.charAt(0) === "'") &&
+          rest.charAt(rest.length - 1) === rest.charAt(0)) {
+        t = rest.substring(1, rest.length - 1);
+      }
+      return { href: raw.substring(1, gt), title: t };
+    }
+  }
+  // split on first whitespace not inside quotes
+  var m = raw.match(/^(\S+)\s+(.+)$/);
+  if (m) {
+    var titleRaw = m[2].trim();
+    var first = titleRaw.charAt(0);
+    var last = titleRaw.charAt(titleRaw.length - 1);
+    var title = "";
+    if ((first === '"' || first === "'" || first === "(") &&
+        ((first === "(" && last === ")") || first === last)) {
+      title = titleRaw.substring(1, titleRaw.length - 1);
+    }
+    return { href: m[1], title: title };
+  }
+  return { href: raw, title: "" };
+}
+
+function matchEmphasis(src, i) {
+  var c = src.charAt(i);
+  if (c !== "*" && c !== "_" && c !== "~") return null;
+
+  // ~~strikethrough~~
+  if (c === "~" && src.charAt(i + 1) === "~") {
+    var endS = src.indexOf("~~", i + 2);
+    if (endS !== -1) {
+      var innerS = src.substring(i + 2, endS);
+      if (innerS.length > 0 && innerS.charAt(0) !== " " && innerS.charAt(innerS.length - 1) !== " ") {
+        return { tag: "del", inner: innerS, end: endS + 2 };
+      }
+    }
+    return null;
+  }
+  if (c === "~") return null;
+
+  // **bold** or __bold__
+  var two = c + c;
+  if (src.charAt(i + 1) === c) {
+    var endB = src.indexOf(two, i + 2);
+    while (endB !== -1) {
+      var inB = src.substring(i + 2, endB);
+      if (inB.length > 0 && inB.charAt(0) !== " " && inB.charAt(inB.length - 1) !== " "
+          && src.charAt(endB - 1) !== "\\") {
+        return { tag: "strong", inner: inB, end: endB + 2 };
+      }
+      endB = src.indexOf(two, endB + 2);
+    }
+  }
+
+  // *italic* or _italic_  (avoid intra-word _underscore_)
+  var endE = -1;
+  var j = i + 1;
+  while (j < src.length) {
+    var cj = src.charAt(j);
+    if (cj === "\\") { j += 2; continue; }
+    if (cj === c) {
+      // not part of ** / __
+      if (src.charAt(j + 1) !== c && src.charAt(j - 1) !== c) {
+        endE = j; break;
+      }
+    }
+    j++;
+  }
+  if (endE !== -1) {
+    var inE = src.substring(i + 1, endE);
+    if (inE.length > 0 && inE.charAt(0) !== " " && inE.charAt(inE.length - 1) !== " ") {
+      // for _, require word-boundary outside (avoid foo_bar_baz)
+      if (c === "_") {
+        var pre = i > 0 ? src.charAt(i - 1) : "";
+        var post = src.charAt(endE + 1);
+        if (/[A-Za-z0-9]/.test(pre) || /[A-Za-z0-9]/.test(post)) return null;
+      }
+      return { tag: "em", inner: inE, end: endE + 1 };
+    }
+  }
+  return null;
+}
+
+// resolve a markdown link target. For .md files, route through app:file.
+function resolveLink(url, ctx) {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(url)) {
+    // absolute scheme (http, https, mailto, app:, ...)
+    if (url.indexOf("app:") === 0) return { href: url, cls: "" };
+    return { href: url, cls: "" };
+  }
+  // relative
+  if (!ctx || !ctx.currentPath || !ctx.fileIndex) {
+    return { href: url, cls: "" };
+  }
+  // strip ./ at start
+  var t = url;
+  while (t.indexOf("./") === 0) t = t.substring(2);
+  // honor #anchor
+  var hashIdx = t.indexOf("#");
+  var anchor = "";
+  if (hashIdx !== -1) { anchor = t.substring(hashIdx); t = t.substring(0, hashIdx); }
+  // resolve against current path
+  var baseDir = ctx.currentPath.split("/").slice(0, -1);
+  var parts = t.split("/");
+  for (var k = 0; k < parts.length; k++) {
+    var p = parts[k];
+    if (p === "" || p === ".") continue;
+    if (p === "..") { baseDir.pop(); continue; }
+    baseDir.push(p);
+  }
+  var resolved = baseDir.join("/");
+  if (/\.(md|markdown)$/i.test(resolved) && ctx.fileIndex[resolved]) {
+    return { href: "app:file:" + encodeURIComponent(resolved) + anchor, cls: "wikilink" };
+  }
+  // unknown / non-md relative: leave as-is (will likely 404 in file://)
+  return { href: t + anchor, cls: "" };
+}
+
+function renderWikiLink(target, alias, ctx) {
+  var label = alias || target;
+  if (!ctx || !ctx.fileIndex) {
+    return '<a class="wikilink broken" title="No vault loaded">' + escHtml(label) + '</a>';
+  }
+  // accept "Note Name" with or without .md, with or without folders
+  var path = resolveWikiTarget(target, ctx);
+  if (!path) {
+    return '<a class="wikilink broken" title="No matching note: ' + escAttr(target) + '">' +
+           escHtml(label) + '</a>';
+  }
+  return '<a class="wikilink" href="app:file:' + encodeURIComponent(path) + '">' +
+         escHtml(label) + '</a>';
+}
+
+function resolveWikiTarget(target, ctx) {
+  if (!target) return null;
+  // direct path match
+  var idx = ctx.fileIndex;
+  var clean = target.replace(/\\/g, "/").replace(/\.(md|markdown)$/i, "");
+  if (idx[clean + ".md"]) return clean + ".md";
+  if (idx[clean + ".markdown"]) return clean + ".markdown";
+  if (idx[clean]) return clean;
+  // basename match (preferring same folder)
+  var lower = clean.toLowerCase();
+  var sameFolder = null, anyMatch = null;
+  var baseDir = (ctx.currentPath || "").split("/").slice(0, -1).join("/");
+  for (var p in idx) {
+    if (!Object.prototype.hasOwnProperty.call(idx, p)) continue;
+    var name = p.split("/").pop().replace(/\.(md|markdown)$/i, "");
+    if (name.toLowerCase() === lower) {
+      anyMatch = anyMatch || p;
+      var dir = p.split("/").slice(0, -1).join("/");
+      if (dir === baseDir) sameFolder = sameFolder || p;
+    }
+  }
+  return sameFolder || anyMatch;
+}
+
+// ---------- math ----------
+// Tiny LaTeX subset:
+//   \alpha .. \omega, \Alpha .. \Omega -> Greek letters
+//   \sum \int \prod \infty \pm \times \cdot \le \ge \ne \approx \to \Rightarrow ...
+//   x^2  x^{ab}  x_i  x_{ij}    -> super/subscript via Unicode / <sup>/<sub>
+//   \frac{a}{b}                -> stacked fraction
+//   \sqrt{x}                   -> overlined radicand
+//   \mathbb{R} \mathbf{x}      -> simple mapping
+function renderMath(src, isBlock) {
+  var html = renderMathInner(src);
+  return '<span class="' + (isBlock ? "math-block" : "math-inline") + '">' + html + '</span>';
+}
+
+var GREEK = {
+  alpha:"α", beta:"β", gamma:"γ", delta:"δ", epsilon:"ε", zeta:"ζ",
+  eta:"η", theta:"θ", iota:"ι", kappa:"κ", lambda:"λ", mu:"μ", nu:"ν",
+  xi:"ξ", omicron:"ο", pi:"π", rho:"ρ", sigma:"σ", tau:"τ", upsilon:"υ",
+  phi:"φ", chi:"χ", psi:"ψ", omega:"ω", varepsilon:"ε", varphi:"φ",
+  vartheta:"ϑ", varrho:"ϱ", varsigma:"ς",
+  Alpha:"Α", Beta:"Β", Gamma:"Γ", Delta:"Δ", Epsilon:"Ε", Zeta:"Ζ",
+  Eta:"Η", Theta:"Θ", Iota:"Ι", Kappa:"Κ", Lambda:"Λ", Mu:"Μ", Nu:"Ν",
+  Xi:"Ξ", Omicron:"Ο", Pi:"Π", Rho:"Ρ", Sigma:"Σ", Tau:"Τ", Upsilon:"Υ",
+  Phi:"Φ", Chi:"Χ", Psi:"Ψ", Omega:"Ω"
+};
+var OPS = {
+  sum:"∑", prod:"∏", int:"∫", oint:"∮", infty:"∞", partial:"∂",
+  pm:"±", mp:"∓", times:"×", div:"÷", cdot:"·", ast:"∗",
+  le:"≤", leq:"≤", ge:"≥", geq:"≥", ne:"≠", neq:"≠",
+  approx:"≈", equiv:"≡", sim:"∼", propto:"∝",
+  to:"→", rightarrow:"→", Rightarrow:"⇒",
+  leftarrow:"←", Leftarrow:"⇐", leftrightarrow:"↔", Leftrightarrow:"⇔",
+  uparrow:"↑", downarrow:"↓",
+  forall:"∀", exists:"∃", in:"∈", notin:"∉", subset:"⊂", supset:"⊃",
+  subseteq:"⊆", supseteq:"⊇", cup:"∪", cap:"∩", emptyset:"∅",
+  nabla:"∇", angle:"∠", perp:"⊥", parallel:"∥",
+  ldots:"…", cdots:"⋯", vdots:"⋮", ddots:"⋱",
+  lceil:"⌈", rceil:"⌉", lfloor:"⌊", rfloor:"⌋",
+  langle:"⟨", rangle:"⟩",
+  hbar:"ℏ", ell:"ℓ", Re:"ℜ", Im:"ℑ", aleph:"ℵ"
+};
+var MATHBB = {
+  R:"ℝ", N:"ℕ", Z:"ℤ", Q:"ℚ", C:"ℂ", P:"ℙ", H:"ℍ", F:"𝔽", E:"𝔼"
+};
+
+function renderMathInner(src) {
+  var i = 0, n = src.length, out = "";
+
+  function readBraced() {
+    // assumes src[i] === "{"
+    var depth = 1, j = i + 1;
+    while (j < n) {
+      var c = src.charAt(j);
+      if (c === "\\" && j + 1 < n) { j += 2; continue; }
+      if (c === "{") depth++;
+      else if (c === "}") { depth--; if (depth === 0) { var s = src.substring(i + 1, j); i = j + 1; return s; } }
+      j++;
+    }
+    var s2 = src.substring(i + 1);
+    i = n;
+    return s2;
+  }
+
+  function readArg() {
+    // single token: {block}, \cmd, single char
+    skipSpaces();
+    if (i >= n) return "";
+    var c = src.charAt(i);
+    if (c === "{") return readBraced();
+    if (c === "\\") {
+      var m = src.substring(i).match(/^\\[A-Za-z]+/);
+      if (m) { var t = m[0]; i += t.length; return t; }
+      // \single
+      var t2 = src.substring(i, i + 2); i += 2; return t2;
+    }
+    i++;
+    return c;
+  }
+
+  function skipSpaces() {
+    while (i < n && (src.charAt(i) === " " || src.charAt(i) === "\t")) i++;
+  }
+
+  while (i < n) {
+    var c = src.charAt(i);
+
+    if (c === "\\") {
+      var rest = src.substring(i + 1);
+      var m = rest.match(/^[A-Za-z]+/);
+      if (m) {
+        var name = m[0];
+        i += 1 + name.length;
+        if (name === "frac") {
+          var a = renderMathInner(readArg());
+          var b = renderMathInner(readArg());
+          out += '<span class="frac"><span class="num-line">' + a + '</span>' +
+                 '<span class="den-line">' + b + '</span></span>';
+          continue;
+        }
+        if (name === "sqrt") {
+          var inner = renderMathInner(readArg());
+          out += '<span class="sqrt">√<span class="radicand">' + inner + '</span></span>';
+          continue;
+        }
+        if (name === "mathbb") {
+          var arg = readArg().trim();
+          out += '<span class="op">' + (MATHBB[arg] || escHtml(arg)) + '</span>';
+          continue;
+        }
+        if (name === "mathbf" || name === "boldsymbol") {
+          var argb = renderMathInner(readArg());
+          out += '<b>' + argb + '</b>';
+          continue;
+        }
+        if (name === "mathrm" || name === "text" || name === "operatorname") {
+          var argr = readArg();
+          out += '<span class="op">' + escHtml(argr) + '</span>';
+          continue;
+        }
+        if (name === "left" || name === "right") {
+          // just emit the next char literally (\left( -> ()
+          if (i < n) { out += escHtml(src.charAt(i)); i++; }
+          continue;
+        }
+        if (Object.prototype.hasOwnProperty.call(GREEK, name)) {
+          out += GREEK[name];
+          continue;
+        }
+        if (Object.prototype.hasOwnProperty.call(OPS, name)) {
+          out += '<span class="op">' + OPS[name] + '</span>';
+          continue;
+        }
+        // unknown command: show its name in upright text
+        out += '<span class="op">\\' + escHtml(name) + '</span>';
+        continue;
+      }
+      // \\, \{, \} ...
+      if (i + 1 < n) {
+        var nx = src.charAt(i + 1);
+        if (nx === "\\") { out += '<br>'; i += 2; continue; }
+        out += escHtml(nx); i += 2; continue;
+      }
+      i++;
+      continue;
+    }
+
+    if (c === "^" || c === "_") {
+      i++;
+      var arg2 = readArg();
+      var rendered = renderMathInner(arg2);
+      out += (c === "^") ? '<sup>' + rendered + '</sup>' : '<sub>' + rendered + '</sub>';
+      continue;
+    }
+
+    if (c >= "0" && c <= "9") {
+      var num = "";
+      while (i < n && /[0-9.,]/.test(src.charAt(i))) { num += src.charAt(i); i++; }
+      out += '<span class="num">' + escHtml(num) + '</span>';
+      continue;
+    }
+
+    if (c === "{" || c === "}") { i++; continue; }
+
+    // normal letters & punctuation
+    out += escHtml(c);
+    i++;
+  }
+
+  return out;
+}
+
+/* ============================================================
+ * Block parser
+ * ============================================================ */
+function parseMarkdown(srcRaw, ctx) {
+  // strip frontmatter
+  var src = srcRaw.replace(/^﻿/, "");
+  if (src.indexOf("---") === 0) {
+    var fmEnd = src.indexOf("\n---", 3);
+    if (fmEnd !== -1) {
+      var afterFm = src.indexOf("\n", fmEnd + 4);
+      src = afterFm === -1 ? "" : src.substring(afterFm + 1);
+    }
+  }
+  // normalize newlines, expand tabs
+  src = src.replace(/\r\n?/g, "\n").replace(/\t/g, "    ");
+
+  var lines = src.split("\n");
+  var i = 0, out = [];
+  ctx.mermaidQueue = ctx.mermaidQueue || [];
+
+  function peek(off) { return lines[i + (off || 0)]; }
+  function eof() { return i >= lines.length; }
+
+  while (!eof()) {
+    var line = lines[i];
+
+    // blank
+    if (/^\s*$/.test(line)) { i++; continue; }
+
+    // fenced code
+    var fence = line.match(/^(\s{0,3})(```+|~~~+)\s*([^\s`]*)\s*$/);
+    if (fence) {
+      var indent = fence[1].length;
+      var marker = fence[2];
+      var lang = (fence[3] || "").trim();
+      i++;
+      var buf = [];
+      while (!eof()) {
+        var l = lines[i];
+        var endRe = new RegExp("^\\s{0," + (indent + 3) + "}" +
+          marker.charAt(0) + "{" + marker.length + ",}\\s*$");
+        if (endRe.test(l)) { i++; break; }
+        // strip up to `indent` leading spaces
+        if (indent > 0 && l.substring(0, indent).replace(/[^ ]/g, "").length === 0) {
+          buf.push(l.substring(indent));
+        } else {
+          buf.push(l);
+        }
+        i++;
+      }
+      var code = buf.join("\n");
+      if (lang === "mermaid") {
+        var hostId = "mermaid-" + (ctx.mermaidQueue.length);
+        ctx.mermaidQueue.push({ id: hostId, code: code });
+        out.push('<div class="mermaid-host" id="' + hostId + '">' +
+                 '<div class="mermaid-pending">rendering diagram…</div></div>');
+      } else {
+        var tag = lang ? '<span class="lang-tag">' + escHtml(lang) + '</span>' : '';
+        out.push('<pre>' + tag + '<code>' + escHtml(code) + '</code></pre>');
+      }
+      continue;
+    }
+
+    // ATX heading
+    var h = line.match(/^(#{1,6})\s+(.*?)\s*#*\s*$/);
+    if (h) {
+      var lvl = h[1].length;
+      var slug = slugify(h[2]);
+      out.push('<h' + lvl + ' id="' + escAttr(slug) + '">' +
+               parseInline(h[2], ctx) + '</h' + lvl + '>');
+      i++;
+      continue;
+    }
+
+    // thematic break
+    if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(line)) {
+      out.push('<hr>');
+      i++; continue;
+    }
+
+    // block math $$
+    // Two forms:
+    //   $$              -> opening fence, body, then $$ on its own line
+    //   $$ a + b $$     -> all on one line
+    var oneLine = line.match(/^\s*\$\$\s*(.+?)\s*\$\$\s*$/);
+    if (oneLine) {
+      out.push('<div class="math-block-wrap">' + renderMath(oneLine[1], true) + '</div>');
+      i++;
+      continue;
+    }
+    if (/^\s*\$\$\s*$/.test(line)) {
+      i++;
+      var mb = [];
+      while (!eof() && !/^\s*\$\$\s*$/.test(lines[i])) { mb.push(lines[i]); i++; }
+      if (!eof()) i++;
+      out.push('<div class="math-block-wrap">' + renderMath(mb.join("\n"), true) + '</div>');
+      continue;
+    }
+
+    // blockquote / callout
+    if (/^\s{0,3}>/.test(line)) {
+      var qBuf = [];
+      while (!eof() && /^\s{0,3}>/.test(lines[i])) {
+        qBuf.push(lines[i].replace(/^\s{0,3}>\s?/, ""));
+        i++;
+      }
+      var inner = qBuf.join("\n");
+      // detect callout: first line is [!type] optional title
+      var calloutMatch = inner.match(/^\[!([A-Za-z]+)\](?:[ \t]+(.*))?(?:\n([\s\S]*))?$/);
+      if (calloutMatch) {
+        var type = calloutMatch[1].toLowerCase();
+        var titleText = (calloutMatch[2] || "").trim();
+        var body = calloutMatch[3] || "";
+        var title = titleText || (type.charAt(0).toUpperCase() + type.slice(1));
+        var bodyHtml = parseMarkdown(body, ctx);
+        out.push('<div class="callout ' + escAttr(type) + '">' +
+                 '<div class="callout-title"><span class="marker">●</span>' +
+                 escHtml(title) + '</div>' + bodyHtml + '</div>');
+      } else {
+        out.push('<blockquote>' + parseMarkdown(inner, ctx) + '</blockquote>');
+      }
+      continue;
+    }
+
+    // tables: header line + alignment line
+    var tbl = tryTable(lines, i);
+    if (tbl) {
+      out.push(tbl.html);
+      i = tbl.next;
+      continue;
+    }
+
+    // lists
+    var listMatch = line.match(/^(\s*)([-+*]|\d{1,9}[.)])\s+/);
+    if (listMatch) {
+      var listResult = parseList(lines, i, ctx);
+      out.push(listResult.html);
+      i = listResult.next;
+      continue;
+    }
+
+    // paragraph: collect until blank or block-start
+    var pBuf = [line];
+    i++;
+    while (!eof()) {
+      var nxt = lines[i];
+      if (/^\s*$/.test(nxt)) break;
+      if (/^(\s{0,3})(```+|~~~+)/.test(nxt)) break;
+      if (/^#{1,6}\s+/.test(nxt)) break;
+      if (/^\s{0,3}>/.test(nxt)) break;
+      if (/^\s{0,3}([-*_])(\s*\1){2,}\s*$/.test(nxt)) break;
+      if (/^(\s*)([-+*]|\d{1,9}[.)])\s+/.test(nxt)) break;
+      if (/^\s*\$\$\s*$/.test(nxt)) break;
+      pBuf.push(nxt);
+      i++;
+    }
+    var paragraph = pBuf.join("\n");
+    out.push('<p>' + parseInline(paragraph, ctx) + '</p>');
+  }
+
+  return out.join("\n");
+}
+
+function slugify(s) {
+  return String(s).toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .trim().replace(/\s+/g, "-");
+}
+
+function tryTable(lines, i) {
+  var head = lines[i];
+  var sep = lines[i + 1];
+  if (!head || !sep) return null;
+  if (head.indexOf("|") === -1) return null;
+  if (!/^\s*\|?\s*:?-{3,}:?(\s*\|\s*:?-{3,}:?)+\s*\|?\s*$/.test(sep)) return null;
+
+  function splitRow(s) {
+    var t = s.trim();
+    if (t.charAt(0) === "|") t = t.substring(1);
+    if (t.charAt(t.length - 1) === "|") t = t.substring(0, t.length - 1);
+    var cells = [];
+    var cur = ""; var inCode = false;
+    for (var k = 0; k < t.length; k++) {
+      var ch = t.charAt(k);
+      if (ch === "\\" && k + 1 < t.length) { cur += t.charAt(k + 1); k++; continue; }
+      if (ch === "`") inCode = !inCode;
+      if (ch === "|" && !inCode) { cells.push(cur); cur = ""; continue; }
+      cur += ch;
+    }
+    cells.push(cur);
+    return cells.map(function (x) { return x.trim(); });
+  }
+
+  var headers = splitRow(head);
+  var aligns = splitRow(sep).map(function (s) {
+    var l = s.charAt(0) === ":";
+    var r = s.charAt(s.length - 1) === ":";
+    if (l && r) return "center";
+    if (r) return "right";
+    if (l) return "left";
+    return "";
+  });
+  if (headers.length !== aligns.length) return null;
+
+  var rows = [];
+  var j = i + 2;
+  while (j < lines.length && lines[j].indexOf("|") !== -1 && !/^\s*$/.test(lines[j])) {
+    rows.push(splitRow(lines[j]));
+    j++;
+  }
+
+  var html = "<table><thead><tr>";
+  for (var c = 0; c < headers.length; c++) {
+    var st = aligns[c] ? ' style="text-align:' + aligns[c] + '"' : "";
+    html += "<th" + st + ">" + parseInline(headers[c], { fileIndex: null }) + "</th>";
+  }
+  html += "</tr></thead><tbody>";
+  for (var r = 0; r < rows.length; r++) {
+    html += "<tr>";
+    for (var c2 = 0; c2 < headers.length; c2++) {
+      var st2 = aligns[c2] ? ' style="text-align:' + aligns[c2] + '"' : "";
+      html += "<td" + st2 + ">" + parseInline(rows[r][c2] || "", { fileIndex: null }) + "</td>";
+    }
+    html += "</tr>";
+  }
+  html += "</tbody></table>";
+  return { html: html, next: j };
+}
+
+function parseList(lines, start, ctx) {
+  // collect contiguous list lines (with blanks allowed between items)
+  var items = [];
+  var i = start;
+  var firstMatch = lines[i].match(/^(\s*)([-+*]|\d{1,9}[.)])\s+/);
+  var ordered = /\d/.test(firstMatch[2].charAt(0));
+  var startNum = ordered ? parseInt(firstMatch[2], 10) : null;
+
+  while (i < lines.length) {
+    var l = lines[i];
+    var m = l.match(/^(\s*)([-+*]|\d{1,9}[.)])\s+(.*)$/);
+    if (!m) {
+      // allow blank inside item, then continuation
+      if (/^\s*$/.test(l)) {
+        // if next line is list or indented continuation, keep going
+        var look = lines[i + 1];
+        if (look && (/^(\s*)([-+*]|\d{1,9}[.)])\s+/.test(look) || /^\s{2,}\S/.test(look))) {
+          if (items.length) items[items.length - 1].lines.push("");
+          i++;
+          continue;
+        }
+        break;
+      }
+      // continuation line (indented)
+      if (items.length && /^\s{2,}\S/.test(l)) {
+        items[items.length - 1].lines.push(l.replace(/^\s{2}/, ""));
+        i++;
+        continue;
+      }
+      break;
+    }
+    var indent = m[1].length;
+    if (items.length === 0) {
+      items.push({ indent: indent, lines: [m[3]], ordered: ordered });
+    } else {
+      // any new top-level list line ends if indent < first item indent? simpler: same list while indent matches
+      if (indent < items[0].indent) break;
+      if (indent === items[0].indent) {
+        items.push({ indent: indent, lines: [m[3]], ordered: ordered });
+      } else {
+        // deeper indent, append to current item
+        items[items.length - 1].lines.push(l.substring(items[0].indent + 2));
+      }
+    }
+    i++;
+  }
+
+  var hasTask = items.some(function (it) {
+    return /^\s*\[[ xX]\]\s/.test(it.lines[0]);
+  });
+
+  var tag = ordered ? "ol" : "ul";
+  var cls = hasTask ? ' class="task-list"' : "";
+  var html = "<" + tag + cls + (ordered && startNum && startNum !== 1 ? ' start="' + startNum + '"' : "") + ">";
+  for (var k = 0; k < items.length; k++) {
+    var it = items[k];
+    var first = it.lines[0];
+    var liCls = "";
+    var content = it.lines.join("\n");
+    if (hasTask) {
+      var tm = first.match(/^\s*\[([ xX])\]\s+(.*)$/);
+      if (tm) {
+        if (tm[1].toLowerCase() === "x") liCls = " class=\"checked\"";
+        content = tm[2] + (it.lines.length > 1 ? "\n" + it.lines.slice(1).join("\n") : "");
+      }
+    }
+    var inner;
+    // if content has block-y stuff (blank line, sub-list), recurse
+    if (/\n\s*\n/.test(content) || /\n(\s*)([-+*]|\d{1,9}[.)])\s+/.test(content)) {
+      inner = parseMarkdown(content, ctx);
+    } else {
+      inner = parseInline(content, ctx);
+    }
+    html += "<li" + liCls + ">" + inner + "</li>";
+  }
+  html += "</" + tag + ">";
+
+  return { html: html, next: i };
+}
+
+
+/* ============================================================
+ * App state and UI
+ * ============================================================ */
+var state = {
+  files: {},        // path -> { name, dirHandle, fileHandle, fileObj }
+  paths: [],        // sorted paths
+  rootName: "",
+  currentPath: null,
+  theme: localStorage.getItem("mdv.theme") || "light",
+  mode: null        // "fsapi" | "input"
+};
+
+var sandbox = document.getElementById("mermaid-sandbox");
+var sandboxReady = false;
+var pendingMermaid = []; // queued before sandbox ready
+var mermaidPromises = {};
+var mermaidSeq = 0;
+
+window.addEventListener("message", function (ev) {
+  if (ev.source !== sandbox.contentWindow) return;
+  var d = ev.data;
+  if (!d || typeof d !== "object") return;
+  if (d.type === "sandbox-ready") {
+    sandboxReady = true;
+    // forward theme
+    sandbox.contentWindow.postMessage({ type: "theme", theme: state.theme }, "*");
+    // flush queue
+    var q = pendingMermaid; pendingMermaid = [];
+    q.forEach(function (job) { sendMermaid(job.id, job.code, job.host); });
+    return;
+  }
+  if (d.type === "rendered" && d.id) {
+    var entry = mermaidPromises[d.id];
+    if (!entry) return;
+    delete mermaidPromises[d.id];
+    if (d.ok && entry.host) {
+      entry.host.innerHTML = d.svg;
+    } else if (entry.host) {
+      entry.host.innerHTML = '<div class="mermaid-error">' + escHtml(d.error || "render failed") + '\n\n' +
+                             escHtml(entry.code || "") + '</div>';
+    }
+  }
+});
+
+function sendMermaid(id, code, host) {
+  mermaidPromises[id] = { host: host, code: code };
+  if (!sandboxReady) {
+    pendingMermaid.push({ id: id, code: code, host: host });
+    return;
+  }
+  sandbox.contentWindow.postMessage({
+    type: "render", id: id, code: code, theme: state.theme
+  }, "*");
+}
+
+// ----- theme -----
+function applyTheme() {
+  document.body.classList.toggle("dark", state.theme === "dark");
+  if (sandboxReady) {
+    sandbox.contentWindow.postMessage({ type: "theme", theme: state.theme }, "*");
+  }
+  // re-render current page so mermaid diagrams pick up the theme
+  if (state.currentPath) openFile(state.currentPath);
+}
+
+document.getElementById("btn-theme").addEventListener("click", function () {
+  state.theme = state.theme === "dark" ? "light" : "dark";
+  localStorage.setItem("mdv.theme", state.theme);
+  applyTheme();
+});
+
+// ----- folder picker -----
+async function pickFolderFsApi() {
+  if (!window.showDirectoryPicker) {
+    alert("This browser does not support the File System Access API. Use the legacy picker instead.");
+    return;
+  }
+  try {
+    var dir = await window.showDirectoryPicker({ id: "mdviewer", mode: "read" });
+    state.mode = "fsapi";
+    state.rootName = dir.name;
+    await collectFsApi(dir, "");
+    finishOpen();
+  } catch (e) {
+    if (e && e.name === "AbortError") return;
+    alert("Could not open folder: " + (e && e.message || e));
+  }
+}
+
+async function collectFsApi(dirHandle, prefix) {
+  for await (var entry of dirHandle.values()) {
+    var path = prefix ? prefix + "/" + entry.name : entry.name;
+    // skip dotfiles / typical noise
+    if (entry.name.charAt(0) === ".") continue;
+    if (entry.kind === "directory") {
+      await collectFsApi(entry, path);
+    } else if (entry.kind === "file" && /\.(md|markdown)$/i.test(entry.name)) {
+      state.files[path] = { name: entry.name, fileHandle: entry, fileObj: null };
+    }
+  }
+}
+
+function pickFolderInput() {
+  var inp = document.createElement("input");
+  inp.type = "file";
+  inp.webkitdirectory = true;
+  inp.multiple = true;
+  inp.addEventListener("change", function () {
+    state.mode = "input";
+    state.files = {};
+    state.rootName = "";
+    var list = inp.files || [];
+    for (var k = 0; k < list.length; k++) {
+      var f = list[k];
+      if (!/\.(md|markdown)$/i.test(f.name)) continue;
+      var rel = f.webkitRelativePath || f.name;
+      // strip top-level folder name from path so the tree root is the folder
+      var firstSlash = rel.indexOf("/");
+      if (firstSlash !== -1) {
+        if (!state.rootName) state.rootName = rel.substring(0, firstSlash);
+        rel = rel.substring(firstSlash + 1);
+      } else {
+        state.rootName = state.rootName || "(files)";
+      }
+      // skip dot-anything paths
+      var skip = rel.split("/").some(function (p) { return p.charAt(0) === "."; });
+      if (skip) continue;
+      state.files[rel] = { name: f.name, fileHandle: null, fileObj: f };
+    }
+    finishOpen();
+  });
+  inp.click();
+}
+
+function finishOpen() {
+  state.paths = Object.keys(state.files).sort();
+  document.getElementById("vault-title").textContent = state.rootName || "Vault";
+  document.getElementById("empty-state").style.display = "none";
+  buildTree();
+  // pick a sensible first file (README or index, else first)
+  var first = state.paths.find(function (p) {
+    var n = p.split("/").pop().toLowerCase();
+    return n === "readme.md" || n === "index.md" || n === "home.md";
+  }) || state.paths[0];
+  if (first) openFile(first);
+}
+
+// ----- tree -----
+function buildTree() {
+  var tree = document.getElementById("tree");
+  tree.innerHTML = "";
+  // build nested object
+  var root = { dirs: {}, files: [] };
+  state.paths.forEach(function (p) {
+    var parts = p.split("/");
+    var node = root;
+    for (var k = 0; k < parts.length - 1; k++) {
+      var d = parts[k];
+      if (!node.dirs[d]) node.dirs[d] = { dirs: {}, files: [] };
+      node = node.dirs[d];
+    }
+    node.files.push({ name: parts[parts.length - 1], path: p });
+  });
+  renderNode(root, tree, "");
+}
+
+function renderNode(node, parentEl, prefix) {
+  // dirs first, alpha
+  var dirNames = Object.keys(node.dirs).sort();
+  for (var i = 0; i < dirNames.length; i++) {
+    var name = dirNames[i];
+    var dirEl = document.createElement("div");
+    dirEl.className = "node dir";
+    dirEl.dataset.path = prefix + name;
+    var row = document.createElement("div");
+    row.className = "row";
+    row.innerHTML = '<span class="caret">▾</span><span class="icon">▣</span>' +
+                    '<span class="label"></span>';
+    row.querySelector(".label").textContent = name;
+    row.addEventListener("click", function () {
+      this.parentNode.classList.toggle("collapsed");
+      var caret = this.querySelector(".caret");
+      caret.textContent = this.parentNode.classList.contains("collapsed") ? "▸" : "▾";
+    });
+    var children = document.createElement("div");
+    children.className = "children";
+    dirEl.appendChild(row);
+    dirEl.appendChild(children);
+    parentEl.appendChild(dirEl);
+    renderNode(node.dirs[name], children, prefix + name + "/");
+  }
+  // files
+  node.files.sort(function (a, b) { return a.name.localeCompare(b.name); });
+  for (var j = 0; j < node.files.length; j++) {
+    var f = node.files[j];
+    var fileEl = document.createElement("div");
+    fileEl.className = "node file";
+    fileEl.dataset.path = f.path;
+    fileEl.dataset.name = f.name.replace(/\.(md|markdown)$/i, "").toLowerCase();
+    var rowF = document.createElement("div");
+    rowF.className = "row";
+    rowF.innerHTML = '<span class="caret"></span><span class="icon">·</span>' +
+                     '<span class="label"></span>';
+    rowF.querySelector(".label").textContent = f.name.replace(/\.(md|markdown)$/i, "");
+    var path = f.path;
+    rowF.addEventListener("click", function (p) {
+      return function () { openFile(p); };
+    }(path));
+    fileEl.appendChild(rowF);
+    parentEl.appendChild(fileEl);
+  }
+}
+
+function highlightActive() {
+  var nodes = document.querySelectorAll(".node.file.active");
+  for (var i = 0; i < nodes.length; i++) nodes[i].classList.remove("active");
+  if (!state.currentPath) return;
+  var sel = document.querySelector('.node.file[data-path="' +
+    state.currentPath.replace(/"/g, '\\"') + '"]');
+  if (sel) {
+    sel.classList.add("active");
+    // expand parents
+    var p = sel.parentNode;
+    while (p && p.classList) {
+      if (p.classList.contains("dir")) p.classList.remove("collapsed");
+      p = p.parentNode;
+    }
+    if (sel.scrollIntoView) sel.scrollIntoView({ block: "nearest" });
+  }
+}
+
+// ----- search -----
+document.getElementById("search").addEventListener("input", function (e) {
+  var q = e.target.value.trim().toLowerCase();
+  var files = document.querySelectorAll(".node.file");
+  var dirs = document.querySelectorAll(".node.dir");
+  if (!q) {
+    files.forEach(function (n) { n.classList.remove("hidden"); });
+    dirs.forEach(function (d) { d.classList.remove("hidden"); });
+    return;
+  }
+  // hide all dirs first; unhide containing matching file
+  dirs.forEach(function (d) { d.classList.add("hidden"); });
+  files.forEach(function (f) {
+    var name = f.dataset.name || "";
+    if (name.indexOf(q) !== -1) {
+      f.classList.remove("hidden");
+      // unhide ancestors
+      var p = f.parentNode;
+      while (p && p.classList && p.classList.contains("children")) {
+        var dir = p.parentNode;
+        if (dir && dir.classList && dir.classList.contains("dir")) {
+          dir.classList.remove("hidden");
+          dir.classList.remove("collapsed");
+        }
+        p = dir ? dir.parentNode : null;
+      }
+    } else {
+      f.classList.add("hidden");
+    }
+  });
+});
+
+// ----- open file -----
+async function openFile(path) {
+  var entry = state.files[path];
+  if (!entry) return;
+  state.currentPath = path;
+  highlightActive();
+
+  var text;
+  try {
+    if (entry.fileObj) {
+      text = await entry.fileObj.text();
+    } else if (entry.fileHandle) {
+      var fileObj = await entry.fileHandle.getFile();
+      text = await fileObj.text();
+    } else {
+      text = "";
+    }
+  } catch (e) {
+    text = "**Error reading file:** " + (e && e.message || e);
+  }
+
+  var ctx = {
+    fileIndex: state.files,
+    currentPath: path,
+    mermaidQueue: []
+  };
+  var html = parseMarkdown(text, ctx);
+
+  var main = document.getElementById("main");
+  var crumbs = path.split("/").map(function (p, i, arr) {
+    if (i === arr.length - 1) return '<span>' + escHtml(p.replace(/\.(md|markdown)$/i, "")) + '</span>';
+    return '<span>' + escHtml(p) + '</span>';
+  }).join('<span class="sep">›</span>');
+
+  main.innerHTML = '<div class="content">' +
+                   '<div class="breadcrumbs">' + crumbs + '</div>' +
+                   html + '</div>';
+
+  // wire up internal links
+  var links = main.querySelectorAll('a[href^="app:file:"]');
+  links.forEach(function (a) {
+    a.addEventListener("click", function (ev) {
+      ev.preventDefault();
+      var raw = a.getAttribute("href").substring("app:file:".length);
+      var hashIdx = raw.indexOf("#");
+      var p = decodeURIComponent(hashIdx === -1 ? raw : raw.substring(0, hashIdx));
+      var anchor = hashIdx === -1 ? "" : raw.substring(hashIdx);
+      openFile(p).then(function () {
+        if (anchor) {
+          var el = document.getElementById(anchor.substring(1));
+          if (el && el.scrollIntoView) el.scrollIntoView();
+        } else {
+          main.scrollTop = 0;
+        }
+      });
+    });
+  });
+  // external links: noopener noreferrer
+  main.querySelectorAll('a[href^="http://"], a[href^="https://"]').forEach(function (a) {
+    a.setAttribute("rel", "noopener noreferrer");
+    a.setAttribute("target", "_blank");
+  });
+
+  // dispatch mermaid jobs
+  ctx.mermaidQueue.forEach(function (job) {
+    var host = document.getElementById(job.id);
+    if (host) sendMermaid("d_" + (++mermaidSeq), job.code, host);
+  });
+
+  main.scrollTop = 0;
+}
+
+// ----- buttons -----
+document.getElementById("btn-pick").addEventListener("click", pickFolderFsApi);
+document.getElementById("btn-pick-input").addEventListener("click", pickFolderInput);
+document.getElementById("empty-pick").addEventListener("click", pickFolderFsApi);
+document.getElementById("empty-pick-input").addEventListener("click", pickFolderInput);
+
+// initial theme
+applyTheme();
+</script>
+</body>
+</html>
