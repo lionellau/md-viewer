@@ -345,6 +345,7 @@
     <footer>
       <button id="btn-pick">Open folder</button>
       <button id="btn-pick-input">Open (legacy)</button>
+      <button id="btn-reopen" style="display:none" title="Reopen last folder"></button>
     </footer>
   </aside>
   <main class="main" id="main">
@@ -1269,6 +1270,31 @@ var pendingMermaid = []; // queued before sandbox ready
 var mermaidPromises = {};
 var mermaidSeq = 0;
 
+var SANDBOX_TIMEOUT_MSG =
+  "Mermaid sandbox did not respond.\n" +
+  "A browser extension (ad blocker, script blocker) may be blocking\n" +
+  "inline scripts inside the iframe. Try disabling extensions for this\n" +
+  "file, or use a different Chromium-based browser.";
+
+// If the iframe loads but sandbox-ready never arrives within 8 s, fail pending jobs.
+sandbox.addEventListener("load", function () {
+  if (sandboxReady) return;
+  setTimeout(function () {
+    if (sandboxReady) return;
+    var q = pendingMermaid; pendingMermaid = [];
+    q.forEach(function (job) {
+      if (job.host) job.host.innerHTML =
+        '<div class="mermaid-error">' + escHtml(SANDBOX_TIMEOUT_MSG) + '</div>';
+    });
+    Object.keys(mermaidPromises).forEach(function (id) {
+      var entry = mermaidPromises[id];
+      if (entry && entry.host) entry.host.innerHTML =
+        '<div class="mermaid-error">' + escHtml(SANDBOX_TIMEOUT_MSG) + '</div>';
+    });
+    mermaidPromises = {};
+  }, 8000);
+});
+
 window.addEventListener("message", function (ev) {
   if (ev.source !== sandbox.contentWindow) return;
   var d = ev.data;
@@ -1322,6 +1348,35 @@ document.getElementById("btn-theme").addEventListener("click", function () {
   applyTheme();
 });
 
+// ----- IndexedDB helpers (for persisting the directory handle) -----
+function idbOpen() {
+  return new Promise(function (resolve, reject) {
+    var req = indexedDB.open("mdviewer", 1);
+    req.onupgradeneeded = function (e) { e.target.result.createObjectStore("kv"); };
+    req.onsuccess = function (e) { resolve(e.target.result); };
+    req.onerror = function () { reject(req.error); };
+  });
+}
+function idbGet(key) {
+  return idbOpen().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var r = db.transaction("kv", "readonly").objectStore("kv").get(key);
+      r.onsuccess = function () { resolve(r.result); };
+      r.onerror = function () { reject(r.error); };
+    });
+  });
+}
+function idbPut(key, value) {
+  return idbOpen().then(function (db) {
+    return new Promise(function (resolve, reject) {
+      var tx = db.transaction("kv", "readwrite");
+      tx.objectStore("kv").put(value, key);
+      tx.oncomplete = function () { resolve(); };
+      tx.onerror = function () { reject(tx.error); };
+    });
+  });
+}
+
 // ----- folder picker -----
 async function pickFolderFsApi() {
   if (!window.showDirectoryPicker) {
@@ -1332,7 +1387,10 @@ async function pickFolderFsApi() {
     var dir = await window.showDirectoryPicker({ id: "mdviewer", mode: "read" });
     state.mode = "fsapi";
     state.rootName = dir.name;
+    state.files = {};
     await collectFsApi(dir, "");
+    idbPut("lastDir", dir).catch(function () {});
+    document.getElementById("btn-reopen").style.display = "none";
     finishOpen();
   } catch (e) {
     if (e && e.name === "AbortError") return;
@@ -1592,8 +1650,37 @@ document.getElementById("btn-pick-input").addEventListener("click", pickFolderIn
 document.getElementById("empty-pick").addEventListener("click", pickFolderFsApi);
 document.getElementById("empty-pick-input").addEventListener("click", pickFolderInput);
 
-// initial theme
+// ----- reopen last folder on startup -----
+async function tryReopenLastFolder() {
+  if (!window.showDirectoryPicker) return; // FSAPI not available
+  try {
+    var handle = await idbGet("lastDir");
+    if (!handle) return;
+    var btn = document.getElementById("btn-reopen");
+    btn.textContent = "⟳ " + handle.name;
+    btn.style.display = "";
+    btn.addEventListener("click", async function () {
+      try {
+        var perm = await handle.queryPermission({ mode: "read" });
+        if (perm !== "granted") perm = await handle.requestPermission({ mode: "read" });
+        if (perm !== "granted") return;
+        state.mode = "fsapi";
+        state.rootName = handle.name;
+        state.files = {};
+        await collectFsApi(handle, "");
+        btn.style.display = "none";
+        finishOpen();
+      } catch (e) {
+        if (e && e.name === "AbortError") return;
+        btn.style.display = "none"; // stale handle
+      }
+    });
+  } catch (e) { /* IndexedDB unavailable — silently skip */ }
+}
+
+// initial theme + reopen check
 applyTheme();
+tryReopenLastFolder();
 </script>
 </body>
 </html>
